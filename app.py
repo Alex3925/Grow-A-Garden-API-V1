@@ -1,11 +1,11 @@
 from flask import Flask, jsonify, render_template_string, request
-from playwright.sync_api import sync_playwright  # Import Playwright
+from playwright.sync_api import sync_playwright
+from twocaptcha import TwoCaptcha
 import logging
 from datetime import datetime
+import time
+import random
 import re
-from apscheduler.schedulers.background import BackgroundScheduler
-from threading import Lock
-import atexit
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -14,11 +14,15 @@ app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Cache and lock for thread-safe updates
+# 2Captcha API key (use environment variable or replace)
+TWOCAPTCHA_API_KEY = "YOUR_2CAPTCHA_API_KEY"  # Replace or set in Render
+solver = TwoCaptcha(TWOCAPTCHA_API_KEY)
+
+# Cache and lock
 cached_data = None
 cache_lock = Lock()
 
-# HTML template with embedded CSS (unchanged)
+# HTML template (unchanged)
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -123,79 +127,114 @@ HTML_TEMPLATE = """
 </html>
 """
 
-# Updated function to scrape stock data using Playwright
+# Updated scrape_stock_data
 def scrape_stock_data():
     url = "https://www.vulcanvalues.com/grow-a-garden/stock"
     try:
         with sync_playwright() as p:
-            # Launch browser in headless mode
             browser = p.chromium.launch(headless=True)
             context = browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-                # Optional: Add proxy
-                # , proxy={"server": "http://your-proxy:port"}
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+                viewport={"width": 1280, "height": 720},
+                # proxy={"server": "http://your-proxy:port"}
             )
             page = context.new_page()
-            
-            # Navigate to the page
-            page.goto(url, timeout=30000)
-            
-            # Wait for content to load (adjust selector or timeout as needed)
-            page.wait_for_selector("div[class*='stock'], div[class*='seed'], div[class*='gear'], div[class*='easter']", timeout=10000)
 
-            # Initialize data structure
+            # Navigate and mimic human behavior
+            page.goto(url, timeout=30000)
+            time.sleep(random.uniform(1, 3))
+            page.mouse.move(random.randint(100, 500), random.randint(100, 500))
+            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            time.sleep(random.uniform(1, 2))
+
+            # Handle CAPTCHA
+            captcha_selector = "div.g-recaptcha, div[class*='cf-turnstile'], div[class*='captcha']"
+            if page.query_selector(captcha_selector):
+                logger.info("CAPTCHA detected, attempting 2Captcha")
+                sitekey = page.query_selector(captcha_selector).get_attribute("data-sitekey")
+                if not sitekey:
+                    logger.error("No CAPTCHA sitekey found")
+                    browser.close()
+                    return {"error": "CAPTCHA sitekey missing", "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+
+                try:
+                    captcha_result = solver.recaptcha(sitekey=sitekey, url=url)
+                    token = captcha_result['code']
+                    logger.info("CAPTCHA solved")
+                    page.evaluate(f"document.getElementById('g-recaptcha-response').innerHTML = '{token}'")
+                    submit_button = page.query_selector("button[type='submit'], input[type='submit'], button[class*='submit']")
+                    if submit_button:
+                        submit_button.click()
+                    else:
+                        page.evaluate("document.querySelector('form').submit()")
+                    time.sleep(random.uniform(2, 4))
+                except Exception as e:
+                    logger.error(f"2Captcha failed: {str(e)}")
+                    browser.close()
+                    return {"error": f"CAPTCHA solving failed: {str(e)}", "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+
+            # Wait for content
+            page.wait_for_selector("h3", timeout=15000)
+
+            # Initialize data structure (added honey and cosmetics)
             stock_data = {
                 "seeds": [],
                 "gear": [],
                 "easter": [],
+                "honey": [],
+                "cosmetics": [],
                 "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             }
 
-            # Find sections for seeds, gear, and Easter stocks
-            sections = page.query_selector_all("div[class*='stock'], div[class*='seed'], div[class*='gear'], div[class*='easter']")
-            for section in sections:
-                title = section.query_selector("h2, h3")
-                if not title:
-                    continue
-                title_text = title.inner_text().lower().strip()
-
-                # Determine category
+            # Find sections
+            headings = page.query_selector_all("h3")
+            for heading in headings:
+                title_text = heading.inner_text().lower().strip()
                 category = None
-                if "seed" in title_text:
+                if "seeds stock" in title_text:
                     category = "seeds"
-                elif "gear" in title_text:
+                elif "gear stock" in title_text:
                     category = "gear"
-                elif "easter" in title_text:
+                elif "egg stock" in title_text:
                     category = "easter"
+                elif "honey stock" in title_text:
+                    category = "honey"
+                elif "cosmetics stock" in title_text:
+                    category = "cosmetics"
                 else:
                     continue
 
-                # Find items in the section
-                items = section.query_selector_all("div[class*='item'], div[class*='product']")
+                # Find sibling divs containing items
+                parent = heading.evaluate_handle("node => node.parentNode")
+                items = parent.query_selector_all("div > p")
                 for item in items:
-                    name = item.query_selector("span[class*='name'], span[class*='title']")
-                    price = item.query_selector("span[class*='price'], span[class*='cost']")
-                    stock = item.query_selector("span[class*='stock'], span[class*='availability']")
+                    text = item.inner_text().strip()
+                    # Parse "Name xQuantity" (e.g., "Carrot x13")
+                    match = re.match(r"(.+?)\s*x(\d+)", text)
+                    if match:
+                        name, quantity = match.groups()
+                        item_data = {
+                            "name": name.strip(),
+                            "quantity": int(quantity),
+                            "price": "N/A"  # No price in HTML
+                        }
+                        stock_data[category].append(item_data)
 
-                    item_data = {
-                        "name": name.inner_text().strip() if name else "Unknown",
-                        "price": price.inner_text().strip() if price else "N/A",
-                        "stock": stock.inner_text().strip() if stock else "N/A"
-                    }
-                    stock_data[category].append(item_data)
+            # Log if no data
+            if not any(stock_data[cat] for cat in stock_data if cat != "last_updated"):
+                logger.warning("No stock data found, check selectors or page content")
 
-            # Close browser
             browser.close()
             return stock_data
 
     except Exception as e:
-        logger.error(f"Error scraping data: {e}")
+        logger.error(f"Error scraping data: {str(e)}")
         return {
-            "error": "Failed to scrape data",
+            "error": f"Failed to scrape data: {str(e)}",
             "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
 
-# Function to update cache
+# Cache update
 def update_cache():
     global cached_data
     try:
@@ -206,23 +245,24 @@ def update_cache():
     except Exception as e:
         logger.error(f"Error updating cache: {e}")
 
-# Initialize scheduler
+# Scheduler
+from apscheduler.schedulers.background import BackgroundScheduler
 scheduler = BackgroundScheduler()
 scheduler.add_job(func=update_cache, trigger="interval", minutes=5)
 scheduler.start()
 
-# Ensure scheduler shuts down when app exits
+# Shutdown scheduler
+import atexit
 atexit.register(lambda: scheduler.shutdown())
 
-# Initial scrape to populate cache
+# Initial scrape
 update_cache()
 
-# Route for static homepage
+# Routes
 @app.route('/')
 def home():
     return render_template_string(HTML_TEMPLATE, base_url=request.host_url.rstrip('/'))
 
-# API endpoint for all stock data
 @app.route('/api/stocks', methods=['GET'])
 def get_all_stocks():
     with cache_lock:
@@ -230,7 +270,6 @@ def get_all_stocks():
             return jsonify({"error": "Data not yet available", "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
         return jsonify(cached_data)
 
-# API endpoint for seeds
 @app.route('/api/stocks/seeds', methods=['GET'])
 def get_seeds():
     with cache_lock:
@@ -238,7 +277,6 @@ def get_seeds():
             return jsonify({"error": "Data not yet available", "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
         return jsonify({"seeds": cached_data.get("seeds", []), "last_updated": cached_data.get("last_updated")})
 
-# API endpoint for gear
 @app.route('/api/stocks/gear', methods=['GET'])
 def get_gear():
     with cache_lock:
@@ -246,13 +284,26 @@ def get_gear():
             return jsonify({"error": "Data not yet available", "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
         return jsonify({"gear": cached_data.get("gear", []), "last_updated": cached_data.get("last_updated")})
 
-# API endpoint for Easter items
 @app.route('/api/stocks/easter', methods=['GET'])
 def get_easter():
     with cache_lock:
         if cached_data is None:
-            return jsonify({"error": "Data not yet available", "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
-        return jsonify({"easter": cached_data.get("easter", []), "last_updated": cached_data.get("last_updated")})
+            return jsonify({"error": "Data not yet available", "last_updated": "datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+        return jsonify({"easter": cached_data["("easter", []]), "last_updated": "cached_data.get("last_updated")})
+
+@app.route('/api/stocks/honey', methods=['GET'])
+def get_honey():
+    with cache_lock:
+        if cached_data is None:
+            return jsonify({"error": "Data not yet available", "last_updated": "datetime.now().strftime("%Y-%M-%d %H:%M:%S")})
+        return jsonify({"honey": "cached_data.get("honey", []]), "last_updated": "cached_data.get("last_updated")})
+
+@app.route('/api/stocks/cosmetics', methods=['GET'])
+def get_cosmetics():
+    with cache_lock:
+        if cached_data is None:
+            return jsonify({"error": "Data not yet available", "last_updated": "datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+        return jsonify({"cosmetics": "cached_data.get("cosmetics", []]), "last_updated": "cached_data.get("last_updated")})
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
