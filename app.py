@@ -1,5 +1,5 @@
 from flask import Flask, jsonify, render_template_string, request
-from pydoll import Chrome  # Replace requests and BeautifulSoup with PyDoll
+from playwright.sync_api import sync_playwright  # Import Playwright
 import logging
 from datetime import datetime
 import re
@@ -123,63 +123,70 @@ HTML_TEMPLATE = """
 </html>
 """
 
-# Updated function to scrape stock data using PyDoll
+# Updated function to scrape stock data using Playwright
 def scrape_stock_data():
     url = "https://www.vulcanvalues.com/grow-a-garden/stock"
     try:
-        # Initialize PyDoll browser
-        options = Chrome.Options()
-        # Optional: Add proxy or other options
-        # options.add_argument("--proxy-server=http://your-proxy:port")
-        browser = Chrome(options=options)
-        
-        # Navigate to the page (PyDoll handles CAPTCHAs automatically)
-        browser.visit(url)
+        with sync_playwright() as p:
+            # Launch browser in headless mode
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+                # Optional: Add proxy
+                # , proxy={"server": "http://your-proxy:port"}
+            )
+            page = context.new_page()
+            
+            # Navigate to the page
+            page.goto(url, timeout=30000)
+            
+            # Wait for content to load (adjust selector or timeout as needed)
+            page.wait_for_selector("div[class*='stock'], div[class*='seed'], div[class*='gear'], div[class*='easter']", timeout=10000)
 
-        # Initialize data structure
-        stock_data = {
-            "seeds": [],
-            "gear": [],
-            "easter": [],
-            "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        }
+            # Initialize data structure
+            stock_data = {
+                "seeds": [],
+                "gear": [],
+                "easter": [],
+                "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }
 
-        # Find sections for seeds, gear, and Easter stocks
-        sections = browser.find_elements("css selector", "div[class*='stock'], div[class*='seed'], div[class*='gear'], div[class*='easter']")
-        for section in sections:
-            title = section.find_element("css selector", "h2, h3")
-            if not title:
-                continue
-            title_text = title.text.lower().strip()
+            # Find sections for seeds, gear, and Easter stocks
+            sections = page.query_selector_all("div[class*='stock'], div[class*='seed'], div[class*='gear'], div[class*='easter']")
+            for section in sections:
+                title = section.query_selector("h2, h3")
+                if not title:
+                    continue
+                title_text = title.inner_text().lower().strip()
 
-            # Determine category
-            category = None
-            if "seed" in title_text:
-                category = "seeds"
-            elif "gear" in title_text:
-                category = "gear"
-            elif "easter" in title_text:
-                category = "easter"
-            else:
-                continue
+                # Determine category
+                category = None
+                if "seed" in title_text:
+                    category = "seeds"
+                elif "gear" in title_text:
+                    category = "gear"
+                elif "easter" in title_text:
+                    category = "easter"
+                else:
+                    continue
 
-            # Find items in the section
-            items = section.find_elements("css selector", "div[class*='item'], div[class*='product']")
-            for item in items:
-                name = item.find_element("css selector", "span[class*='name'], span[class*='title']")
-                price = item.find_element("css selector", "span[class*='price'], span[class*='cost']")
-                stock = item.find_element("css selector", "span[class*='stock'], span[class*='availability']")
+                # Find items in the section
+                items = section.query_selector_all("div[class*='item'], div[class*='product']")
+                for item in items:
+                    name = item.query_selector("span[class*='name'], span[class*='title']")
+                    price = item.query_selector("span[class*='price'], span[class*='cost']")
+                    stock = item.query_selector("span[class*='stock'], span[class*='availability']")
 
-                item_data = {
-                    "name": name.text.strip() if name else "Unknown",
-                    "price": price.text.strip() if price else "N/A",
-                    "stock": stock.text.strip() if stock else "N/A"
-                }
-                stock_data[category].append(item_data)
+                    item_data = {
+                        "name": name.inner_text().strip() if name else "Unknown",
+                        "price": price.inner_text().strip() if price else "N/A",
+                        "stock": stock.inner_text().strip() if stock else "N/A"
+                    }
+                    stock_data[category].append(item_data)
 
-        # Close the browser
-        browser.quit()
-        return stock_data
+            # Close browser
+            browser.close()
+            return stock_data
 
     except Exception as e:
         logger.error(f"Error scraping data: {e}")
