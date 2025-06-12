@@ -1,6 +1,5 @@
 from flask import Flask, jsonify, render_template_string, request
 from playwright.sync_api import sync_playwright
-from twocaptcha import TwoCaptcha
 import logging
 from datetime import datetime
 import time
@@ -13,10 +12,6 @@ app = Flask(__name__)
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# 2Captcha API key (use environment variable or replace)
-TWOCAPTCHA_API_KEY = "YOUR_2CAPTCHA_API_KEY"  # Replace or set in Render
-solver = TwoCaptcha(TWOCAPTCHA_API_KEY)
 
 # Cache and lock
 cached_data = None
@@ -118,6 +113,16 @@ HTML_TEMPLATE = """
                 <p>Returns only Easter stock data.</p>
                 <pre><code>curl -X GET {{ base_url }}/api/stocks/easter</code></pre>
             </li>
+            <li>
+                <strong>GET /api/stocks/honey</strong>
+                <p>Returns only honey stock data.</p>
+                <pre><code>curl -X GET {{ base_url }}/api/stocks/honey</code></pre>
+            </li>
+            <li>
+                <strong>GET /api/stocks/cosmetics</strong>
+                <p>Returns only cosmetics stock data.</p>
+                <pre><code>curl -X GET {{ base_url }}/api/stocks/cosmetics</code></pre>
+            </li>
         </ul>
         <div class="footer">
             <p>Built with Flask | Data sourced from <a href="https://www.vulcanvalues.com">VulcanValues</a> | Deployed on Render</p>
@@ -127,7 +132,7 @@ HTML_TEMPLATE = """
 </html>
 """
 
-# Updated scrape_stock_data
+# Updated scrape_stock_data (no 2Captcha)
 def scrape_stock_data():
     url = "https://www.vulcanvalues.com/grow-a-garden/stock"
     try:
@@ -136,47 +141,31 @@ def scrape_stock_data():
             context = browser.new_context(
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
                 viewport={"width": 1280, "height": 720},
+                # Optional proxy (uncomment if needed)
                 # proxy={"server": "http://your-proxy:port"}
             )
             page = context.new_page()
 
-            # Navigate and mimic human behavior
+            # Enhanced stealth
             page.goto(url, timeout=30000)
-            time.sleep(random.uniform(1, 3))
+            time.sleep(random.uniform(2, 4))
             page.mouse.move(random.randint(100, 500), random.randint(100, 500))
+            page.mouse.click(random.randint(100, 500), random.randint(100, 500))
             page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            time.sleep(random.uniform(1, 2))
+            time.sleep(random.uniform(2, 3))
+            page.wait_for_load_state("networkidle", timeout=20000)
 
-            # Handle CAPTCHA
+            # Check for CAPTCHA (basic detection)
             captcha_selector = "div.g-recaptcha, div[class*='cf-turnstile'], div[class*='captcha']"
             if page.query_selector(captcha_selector):
-                logger.info("CAPTCHA detected, attempting 2Captcha")
-                sitekey = page.query_selector(captcha_selector).get_attribute("data-sitekey")
-                if not sitekey:
-                    logger.error("No CAPTCHA sitekey found")
-                    browser.close()
-                    return {"error": "CAPTCHA sitekey missing", "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
-
-                try:
-                    captcha_result = solver.recaptcha(sitekey=sitekey, url=url)
-                    token = captcha_result['code']
-                    logger.info("CAPTCHA solved")
-                    page.evaluate(f"document.getElementById('g-recaptcha-response').innerHTML = '{token}'")
-                    submit_button = page.query_selector("button[type='submit'], input[type='submit'], button[class*='submit']")
-                    if submit_button:
-                        submit_button.click()
-                    else:
-                        page.evaluate("document.querySelector('form').submit()")
-                    time.sleep(random.uniform(2, 4))
-                except Exception as e:
-                    logger.error(f"2Captcha failed: {str(e)}")
-                    browser.close()
-                    return {"error": f"CAPTCHA solving failed: {str(e)}", "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+                logger.error("CAPTCHA detected, cannot proceed without solver")
+                browser.close()
+                return {"error": "Blocked by CAPTCHA", "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 
             # Wait for content
             page.wait_for_selector("h3", timeout=15000)
 
-            # Initialize data structure (added honey and cosmetics)
+            # Initialize data structure
             stock_data = {
                 "seeds": [],
                 "gear": [],
@@ -209,14 +198,14 @@ def scrape_stock_data():
                 items = parent.query_selector_all("div > p")
                 for item in items:
                     text = item.inner_text().strip()
-                    # Parse "Name xQuantity" (e.g., "Carrot x13")
+                    # Parse "Name xQuantity"
                     match = re.match(r"(.+?)\s*x(\d+)", text)
                     if match:
                         name, quantity = match.groups()
                         item_data = {
                             "name": name.strip(),
                             "quantity": int(quantity),
-                            "price": "N/A"  # No price in HTML
+                            "price": "N/A"
                         }
                         stock_data[category].append(item_data)
 
@@ -288,22 +277,22 @@ def get_gear():
 def get_easter():
     with cache_lock:
         if cached_data is None:
-            return jsonify({"error": "Data not yet available", "last_updated": "datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
-        return jsonify({"easter": cached_data["("easter", []]), "last_updated": "cached_data.get("last_updated")})
+            return jsonify({"error": "Data not yet available", "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+        return jsonify({"easter": cached_data.get("easter", []), "last_updated": cached_data.get("last_updated")})
 
 @app.route('/api/stocks/honey', methods=['GET'])
 def get_honey():
     with cache_lock:
         if cached_data is None:
-            return jsonify({"error": "Data not yet available", "last_updated": "datetime.now().strftime("%Y-%M-%d %H:%M:%S")})
-        return jsonify({"honey": "cached_data.get("honey", []]), "last_updated": "cached_data.get("last_updated")})
+            return jsonify({"error": "Data not yet available", "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+        return jsonify({"honey": cached_data.get("honey", []), "last_updated": cached_data.get("last_updated")})
 
 @app.route('/api/stocks/cosmetics', methods=['GET'])
 def get_cosmetics():
     with cache_lock:
         if cached_data is None:
-            return jsonify({"error": "Data not yet available", "last_updated": "datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
-        return jsonify({"cosmetics": "cached_data.get("cosmetics", []]), "last_updated": "cached_data.get("last_updated")})
+            return jsonify({"error": "Data not yet available", "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+        return jsonify({"cosmetics": cached_data.get("cosmetics", []), "last_updated": cached_data.get("last_updated")})
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
