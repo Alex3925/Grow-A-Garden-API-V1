@@ -1,5 +1,6 @@
 from flask import Flask, jsonify, render_template_string, request
 from playwright.sync_api import sync_playwright
+from threading import Lock  # Added import
 import logging
 from datetime import datetime
 import time
@@ -17,7 +18,7 @@ logger = logging.getLogger(__name__)
 cached_data = None
 cache_lock = Lock()
 
-# HTML template (unchanged)
+# HTML template (updated for clarity)
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -88,13 +89,15 @@ HTML_TEMPLATE = """
         <ul>
             <li>
                 <strong>GET /api/stocks</strong>
-                <p>Returns all stock data (seeds, gear, and Easter items).</p>
+                <p>Returns all stock data (seeds, gear, Easter, honey, cosmetics).</p>
                 <pre><code>curl -X GET {{ base_url }}/api/stocks</code></pre>
                 <p>Example Response:</p>
                 <pre><code>{
     "seeds": [...],
     "gear": [...],
     "easter": [...],
+    "honey": [...],
+    "cosmetics": [...],
     "last_updated": "YYYY-MM-DD HH:MM:SS"
 }</code></pre>
             </li>
@@ -132,7 +135,7 @@ HTML_TEMPLATE = """
 </html>
 """
 
-# Updated scrape_stock_data (no 2Captcha)
+# Scrape stock data
 def scrape_stock_data():
     url = "https://www.vulcanvalues.com/grow-a-garden/stock"
     try:
@@ -141,12 +144,11 @@ def scrape_stock_data():
             context = browser.new_context(
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
                 viewport={"width": 1280, "height": 720},
-                # Optional proxy (uncomment if needed)
                 # proxy={"server": "http://your-proxy:port"}
             )
             page = context.new_page()
 
-            # Enhanced stealth
+            # Stealth enhancements
             page.goto(url, timeout=30000)
             time.sleep(random.uniform(2, 4))
             page.mouse.move(random.randint(100, 500), random.randint(100, 500))
@@ -155,7 +157,7 @@ def scrape_stock_data():
             time.sleep(random.uniform(2, 3))
             page.wait_for_load_state("networkidle", timeout=20000)
 
-            # Check for CAPTCHA (basic detection)
+            # Check for CAPTCHA
             captcha_selector = "div.g-recaptcha, div[class*='cf-turnstile'], div[class*='captcha']"
             if page.query_selector(captcha_selector):
                 logger.error("CAPTCHA detected, cannot proceed without solver")
@@ -284,7 +286,7 @@ def get_easter():
 def get_honey():
     with cache_lock:
         if cached_data is None:
-            return jsonify({"error": "Data not yet available", "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+            return jsonify({"error": "Data not yet available", "last_updated": datetime.now().strftime("%Y-m-%d %H:%M:%S")})
         return jsonify({"honey": cached_data.get("honey", []), "last_updated": cached_data.get("last_updated")})
 
 @app.route('/api/stocks/cosmetics', methods=['GET'])
