@@ -1,5 +1,5 @@
 # app.py
-from flask import Flask, jsonify, render_template_string
+from flask import Flask, jsonify, render_template_string, request  # Added request import
 import requests
 from bs4 import BeautifulSoup
 import logging
@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 cached_data = None
 cache_lock = Lock()
 
-# HTML template with embedded CSS (same as before)
+# HTML template with embedded CSS
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
