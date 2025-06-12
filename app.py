@@ -1,7 +1,5 @@
-# app.py
-from flask import Flask, jsonify, render_template_string, request  # Added request import
-import requests
-from bs4 import BeautifulSoup
+from flask import Flask, jsonify, render_template_string, request
+from pydoll import Chrome  # Replace requests and BeautifulSoup with PyDoll
 import logging
 from datetime import datetime
 import re
@@ -20,7 +18,7 @@ logger = logging.getLogger(__name__)
 cached_data = None
 cache_lock = Lock()
 
-# HTML template with embedded CSS
+# HTML template with embedded CSS (unchanged)
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -125,16 +123,18 @@ HTML_TEMPLATE = """
 </html>
 """
 
-# Function to scrape stock data
+# Updated function to scrape stock data using PyDoll
 def scrape_stock_data():
     url = "https://www.vulcanvalues.com/grow-a-garden/stock"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-    }
     try:
-        response = requests.get(url, headers=headers, timeout=10)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, 'html.parser')
+        # Initialize PyDoll browser
+        options = Chrome.Options()
+        # Optional: Add proxy or other options
+        # options.add_argument("--proxy-server=http://your-proxy:port")
+        browser = Chrome(options=options)
+        
+        # Navigate to the page (PyDoll handles CAPTCHAs automatically)
+        browser.visit(url)
 
         # Initialize data structure
         stock_data = {
@@ -145,13 +145,12 @@ def scrape_stock_data():
         }
 
         # Find sections for seeds, gear, and Easter stocks
-        sections = soup.find_all("div", class_=re.compile("stock|seed|gear|easter", re.I))
+        sections = browser.find_elements("css selector", "div[class*='stock'], div[class*='seed'], div[class*='gear'], div[class*='easter']")
         for section in sections:
-            title = section.find("h2") or section.find("h3")
+            title = section.find_element("css selector", "h2, h3")
             if not title:
                 continue
             title_text = title.text.lower().strip()
-            items = section.find_all("div", class_=re.compile("item|product", re.I))
 
             # Determine category
             category = None
@@ -164,10 +163,12 @@ def scrape_stock_data():
             else:
                 continue
 
+            # Find items in the section
+            items = section.find_elements("css selector", "div[class*='item'], div[class*='product']")
             for item in items:
-                name = item.find("span", class_=re.compile("name|title", re.I))
-                price = item.find("span", class_=re.compile("price|cost", re.I))
-                stock = item.find("span", class_=re.compile("stock|availability", re.I))
+                name = item.find_element("css selector", "span[class*='name'], span[class*='title']")
+                price = item.find_element("css selector", "span[class*='price'], span[class*='cost']")
+                stock = item.find_element("css selector", "span[class*='stock'], span[class*='availability']")
 
                 item_data = {
                     "name": name.text.strip() if name else "Unknown",
@@ -176,7 +177,10 @@ def scrape_stock_data():
                 }
                 stock_data[category].append(item_data)
 
+        # Close the browser
+        browser.quit()
         return stock_data
+
     except Exception as e:
         logger.error(f"Error scraping data: {e}")
         return {
